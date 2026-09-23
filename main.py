@@ -16,8 +16,8 @@ from pdf2docx import Converter
 import pandas as pd
 import pdfplumber
 
-BOT_TOKEN = os.getenv("8678211885:AAHIpB6Zw_A2kv8OaCdMBmqP1n27iu65k_M")
-WEB_APP_URL = os.getenv("https://arindamwandar-maker.github.io/pdf-ad-gate/")
+BOT_TOKEN = "8678211885:AAHIpB6Zw_A2kv8OaCdMBmqP1n27iu65k_M"
+WEB_APP_URL = "https://arindamwandar-maker.github.io/pdf-ad-gate/"
 PORT = int(os.getenv("PORT", 8080))
 
 bot = Bot(token=BOT_TOKEN)
