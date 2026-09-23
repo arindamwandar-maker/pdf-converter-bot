@@ -1,5 +1,7 @@
 import os
 import shutil
+import asyncio
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message,
@@ -14,19 +16,34 @@ from pdf2docx import Converter
 import pandas as pd
 import pdfplumber
 
-BOT_TOKEN = os.getenv("8678211885:AAHIpB6Zw_A2kv8OaCdMBmqP1n27iu65k_M")
+BOT_TOKEN = os.getenv("8678211885:AAHIpB6Zw_A2kv8OaCdMBmqP1n27iu65k_M
+")
 WEB_APP_URL = os.getenv("https://arindamwandar-maker.github.io/pdf-ad-gate/")
+PORT = int(os.getenv("PORT", 8080))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# user_id -> {"converted_path": str, "cleanup_dir": str}
+# Memory cache: user_id -> {"file": path, "dir": path}
 user_state = {}
 
+# --- Health Check Web Server for Render ---
+async def health_check(request):
+    return web.Response(text="Bot is running healthy!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+
+# --- Telegram Bot Handlers ---
 @dp.message(F.document)
 async def process_incoming_pdf(message: Message):
     if not (message.document.file_name and message.document.file_name.lower().endswith(".pdf")):
-        await message.reply("Please upload a PDF document.")
+        await message.reply("Please upload a valid PDF document.")
         return
 
     user_id = message.from_user.id
@@ -38,7 +55,6 @@ async def process_incoming_pdf(message: Message):
     file_info = await bot.get_file(message.document.file_id)
     await bot.download_file(file_info.file_path, pdf_input)
 
-    # Offer conversion choices
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="📄 To Word (.docx)", callback_data="conv_word"),
@@ -50,7 +66,7 @@ async def process_incoming_pdf(message: Message):
         ]
     ])
 
-    await message.reply("PDF received! Choose an action:", reply_markup=keyboard)
+    await message.reply("PDF received! What do you want to do?", reply_markup=keyboard)
 
 
 @dp.callback_query(F.data.startswith("conv_"))
@@ -65,7 +81,7 @@ async def handle_conversion(callback: CallbackQuery):
         await callback.answer()
         return
 
-    await callback.message.edit_text("⏳ Processing your file, please wait...")
+    await callback.message.edit_text("⏳ Processing your file...")
     output_path = None
 
     try:
@@ -88,13 +104,12 @@ async def handle_conversion(callback: CallbackQuery):
                 df = pd.DataFrame(extracted_tables[1:], columns=extracted_tables[0])
                 df.to_excel(output_path, index=False)
             else:
-                # Fallback to empty excel if no table detected
-                pd.DataFrame({"Info": ["No distinct tables detected in PDF"]}).to_excel(output_path, index=False)
+                pd.DataFrame({"Info": ["No tables detected in PDF"]}).to_excel(output_path, index=False)
 
         elif action == "conv_png":
             output_path = os.path.join(user_dir, "page_1.png")
             doc = fitz.open(pdf_input)
-            page = doc.load_page(0)  # first page
+            page = doc.load_page(0)
             pix = page.get_pixmap(dpi=150)
             pix.save(output_path)
             doc.close()
@@ -105,13 +120,11 @@ async def handle_conversion(callback: CallbackQuery):
             doc.save(output_path, garbage=4, deflate=True, clean=True)
             doc.close()
 
-        # Cache file path awaiting the ad view
         user_state[user_id] = {
             "file": output_path,
             "dir": user_dir
         }
 
-        # Show button that opens Adsgram Mini App
         unlock_keyboard = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(
                 text="🎬 Watch Ad to Download",
@@ -120,18 +133,18 @@ async def handle_conversion(callback: CallbackQuery):
         ]])
 
         await callback.message.reply(
-            "✅ File converted successfully!\nWatch a 15-second sponsor video to claim your file:",
+            "✅ File converted!\nWatch this quick sponsor video to unlock your download:",
             reply_markup=unlock_keyboard
         )
 
     except Exception as e:
-        await callback.message.reply(f"Conversion failed: {str(e)}")
+        await callback.message.reply(f"Conversion error: {str(e)}")
     
     await callback.answer()
 
 
 @dp.message(F.web_app_data)
-async def handle_ad_unlock(message: Message):
+async def handle_ad_completed(message: Message):
     if message.web_app_data.data == "UNLOCKED_OK":
         user_id = message.from_user.id
         data = user_state.get(user_id)
@@ -142,16 +155,15 @@ async def handle_ad_unlock(message: Message):
                 document=file_to_send,
                 caption="Here is your file! Thank you for watching the sponsor clip."
             )
-            # Clean up local storage
             shutil.rmtree(data["dir"], ignore_errors=True)
             user_state.pop(user_id, None)
         else:
-            await message.reply("File expired or unavailable. Please re-send your PDF.")
+            await message.reply("Download link expired. Please send the PDF again.")
 
 
 async def main():
+    await start_web_server()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
